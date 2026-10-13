@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avito-arbitrage"
+version = "2.0.0"
+description = "AVITO ARBITRAGE AI — поиск, оценка, ремонт и перепродажа товаров вторичного рынка"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1",
+    "PyYAML>=6.0",
+    "SQLAlchemy>=2.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic"]
+sheets = ["gspread>=6.0"]
+postgres = ["psycopg[binary]>=3.1"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+arbitrage = "arbitrage.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["arbitrage*"]
+
+[tool.setuptools.package-data]
+arbitrage = ["data/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

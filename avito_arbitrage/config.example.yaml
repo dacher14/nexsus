@@ -1,0 +1,45 @@
+# Настройки AVITO ARBITRAGE AI. Скопируйте в config.yaml и передайте: --config config.yaml
+# Не указанные параметры берутся по умолчанию (раздел 3 мастер-промпта).
+
+region: ""                  # ваш город — укажите сами
+nearby_areas: []            # соседние районы, куда готовы ездить
+
+capital_total: 30000        # начальный капитал, ₽
+capital_reserve: 0          # неприкосновенный резерв, ₽
+max_purchase_price: 10000   # максимум за одну покупку, ₽
+min_net_profit: 1500        # минимальная чистая прибыль, ₽
+min_roi: 0.20               # минимальная рентабельность к полной себестоимости
+max_days_to_sell: 14
+max_loss_share_of_capital: 0.25
+risk_appetite: conservative # conservative | moderate
+
+campaign_target_min: 200
+campaign_target_max: 400
+top_size: 50
+
+allowed_strategies: [working, diy, service, as_is]
+allowed_categories: []      # пусто = все; коды — см. arbitrage/categories.py
+banned_categories: []
+
+# Экономика
+ask_to_sale_ratio: 0.92     # цена сделки ≈ 92% от цены выставления
+sale_fixed_cost: 150        # продвижение объявления
+sale_fee_rate: 0.0
+storage_cost_per_day: 0
+returns_reserve_rate: 0.03
+hourly_rate: 400            # во сколько вы оцениваете час своего времени
+diy_skills: [basic]         # basic / soldering / expert
+transport_cost: {small: 300, medium: 600, large: 1500, bulky: 3000}
+
+# Переговоры
+negotiation_max_rounds: 3
+negotiation_contact_name: ""
+
+# LLM-анализ неоднозначных описаний (нужен pip install anthropic и ANTHROPIC_API_KEY)
+llm_enabled: false
+llm_model: claude-opus-5-5
+llm_effort: low
+llm_max_calls_per_campaign: 50
+
+# База: SQLite по умолчанию; PostgreSQL — через DATABASE_URL
+database_url: sqlite:///data/arbitrage.db

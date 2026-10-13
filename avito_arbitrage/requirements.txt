@@ -1,0 +1,9 @@
+openpyxl>=3.1
+PyYAML>=6.0
+SQLAlchemy>=2.0
+requests>=2.31
+pytest>=8
+# по желанию:
+# anthropic            — LLM-анализ описаний (llm_enabled: true)
+# gspread>=6.0         — выгрузка в Google Sheets
+# psycopg[binary]>=3.1 — PostgreSQL (DATABASE_URL=postgresql+psycopg://…)
