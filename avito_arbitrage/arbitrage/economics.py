@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .categories import Category
 from .config import Settings
-from .models import Costs, DefectAnalysis, MarketEstimate, Scenario, Strategy
+from .models import Costs, DefectAnalysis, Logistics, MarketEstimate, Scenario, Strategy
 
 SCENARIOS = ("conservative", "base", "optimistic")
 STRATEGY_LABELS = {
@@ -62,6 +62,18 @@ class DealContext:
     days_to_sell: int
     calibration: Calibration
     capital_in_use: int = 0
+    logistics: Logistics = field(default_factory=lambda: Logistics("local"))
+
+    @property
+    def acquisition_transport(self) -> int:
+        """Сколько стоит забрать товар: по городу, поездкой в соседний город или доставкой."""
+        size, s, lg = self.category.size, self.settings, self.logistics
+        local = s.transport_cost.get(size, 0)
+        if lg.mode == "pickup":
+            return lg.extra_cost + (local if size in ("large", "bulky") else 0)
+        if lg.mode == "delivery":
+            return lg.extra_cost
+        return local
 
 
 def _sum_ranges(ranges: list[tuple[int, int]]) -> tuple[int, int]:
@@ -183,9 +195,9 @@ def evaluate(plan: RepairPlan, scenario: str, ctx: DealContext, purchase: int) -
         p = {"conservative": p * 0.85, "base": p, "optimistic": min(1.0, p + 0.05)}[scenario]
 
     sell_days = ctx.days_to_sell * (1.5 if plan.code == "as_is" else 1.0)
-    days_held = math.ceil(plan.repair_days + sell_days * ctx.calibration.days
+    days_held = math.ceil(plan.repair_days + ctx.logistics.extra_days + sell_days * ctx.calibration.days
                           * {"conservative": 2.0, "base": 1.0, "optimistic": 0.75}[scenario])
-    transport = s.transport_cost.get(cat.size, 0) + ctx.defects.extra_transport + plan.logistics
+    transport = ctx.acquisition_transport + ctx.defects.extra_transport + plan.logistics
     other = s.packaging_cost.get(cat.size, 0) + s.storage_cost_per_day * days_held
     selling = _selling(resale, s)
     overrun = round((diag + parts + labor) * OVERRUN_BY_CLASS[ctx.defects.defect_class]) \
@@ -239,6 +251,8 @@ def build_strategies(ctx: DealContext) -> list[Strategy]:
     decision_scenario = "base" if ctx.settings.risk_appetite == "moderate" else "conservative"
     strategies = []
     for plan in build_plans(ctx):
+        if ctx.logistics.mode == "unavailable":
+            plan.feasible, plan.reason = False, ctx.logistics.note
         strat = Strategy(code=plan.code, label=STRATEGY_LABELS[plan.code], feasible=plan.feasible,
                          reason=plan.reason, hours=plan.hours)
         for name in SCENARIOS:

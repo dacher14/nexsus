@@ -1,8 +1,9 @@
 """План многопроходного поиска (раздел 5).
 
-Генерирует поисковые запросы для разрешённого источника объявлений или для
-ручного поиска. Запрос сохраняется в поле search_query объявления — по нему
-считается эффективность запросов на листе MARKET INTELLIGENCE.
+Генерирует поисковые запросы и ссылки, которые пользователь открывает в своём
+браузере (агент Avito не открывает). Найденные страницы сохраняются (Ctrl+S) и
+загружаются командой campaign. Заголовок сохранённой страницы попадает в поле
+search_query — по нему считается эффективность запросов в MARKET INTELLIGENCE.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .categories import CATEGORIES
+from .geo import search_url
 
 # Модели с высокой ликвидностью — отправная точка; список расширяется по статистике.
 SEED_MODELS: dict[str, list[str]] = {
@@ -43,21 +45,35 @@ class Query:
     pass_name: str
     category: str
     query: str
+    city: str = ""   # пусто — вся Россия (покупка с доставкой)
+
+    @property
+    def url(self) -> str:
+        return search_url(self.city, self.query)
 
 
-def build_plan(categories: list[str] | None = None, symptoms_per_model: int = 6) -> list[Query]:
+def build_plan(categories: list[str] | None = None, cities: list[str] | None = None,
+               home: str = "", symptoms_per_model: int = 6) -> list[Query]:
+    """Широкие проходы — по каждому городу; поиск по симптомам и опечаткам — по домашнему
+    городу и по всей России (там неисправные товары чаще продают с доставкой)."""
     cats = categories or [c for c in CATEGORIES if CATEGORIES[c].priority in ("A", "B")]
+    cities = list(dict.fromkeys(cities or [home, ""]))
+    deep_cities = list(dict.fromkeys([home, ""]))
     plan: list[Query] = []
-    for cat in cats:
-        plan.append(Query(1, "Широкий сбор", cat, CATEGORIES[cat].name.lower()))
-        for model in SEED_MODELS.get(cat, []):
-            plan.append(Query(1, "Широкий сбор", cat, model))
-            plan.append(Query(2, "Недооценённые (сортировка по цене)", cat, model))
-            for symptom in SYMPTOM_QUERIES[:symptoms_per_model]:
-                plan.append(Query(4, "Поиск по симптомам", cat, f"{model} {symptom}"))
-        plan.append(Query(3, "Неисправные", cat, f"{CATEGORIES[cat].name.lower()} на запчасти"))
-    for typo in TYPO_QUERIES:
-        plan.append(Query(6, "Неточные объявления", "", typo))
+    for city in cities:
+        for cat in cats:
+            plan.append(Query(1, "Широкий сбор", cat, CATEGORIES[cat].name.lower(), city))
+            for model in SEED_MODELS.get(cat, []):
+                plan.append(Query(1, "Широкий сбор", cat, model, city))
+                plan.append(Query(2, "Недооценённые (сортировка по цене)", cat, model, city))
+            plan.append(Query(3, "Неисправные", cat, f"{CATEGORIES[cat].name.lower()} на запчасти", city))
+    for city in deep_cities:
+        for cat in cats:
+            for model in SEED_MODELS.get(cat, []):
+                for symptom in SYMPTOM_QUERIES[:symptoms_per_model]:
+                    plan.append(Query(4, "Поиск по симптомам", cat, f"{model} {symptom}", city))
+        for typo in TYPO_QUERIES:
+            plan.append(Query(6, "Неточные объявления", "", typo, city))
     return plan
 
 
@@ -66,7 +82,7 @@ def write_plan(plan: list[Query], path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["Проход", "Название прохода", "Категория", "Запрос"])
+        w.writerow(["Проход", "Название прохода", "Категория", "Город", "Запрос", "Ссылка (открыть вручную)"])
         for q in plan:
-            w.writerow([q.pass_no, q.pass_name, q.category, q.query])
+            w.writerow([q.pass_no, q.pass_name, q.category, q.city or "вся Россия", q.query, q.url])
     return path

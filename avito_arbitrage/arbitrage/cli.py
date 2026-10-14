@@ -142,7 +142,9 @@ def cmd_report(args, settings) -> int:
 
 
 def cmd_search_plan(args, settings) -> int:
-    plan = build_plan(args.categories)
+    cities = args.cities if args.cities is not None else (settings.search_cities or None)
+    plan = build_plan(args.categories, [("" if c.lower() in ("россия", "вся россия") else c) for c in cities]
+                      if cities else None, home=settings.region)
     path = write_plan(plan, args.out)
     print(f"План поиска: {len(plan)} запросов → {path}")
     return 0
@@ -220,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("search-plan", help="план многопроходного поиска (CSV)")
     sp.add_argument("--out", default="out/search_plan.csv")
     sp.add_argument("--categories", nargs="*")
+    sp.add_argument("--cities", nargs="*", help="города поиска; «Россия» — все регионы с доставкой")
     sp.set_defaults(func=cmd_search_plan)
 
     t = sub.add_parser("telegram", help="Telegram-бот управления (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHAT_ID)")

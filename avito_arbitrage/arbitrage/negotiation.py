@@ -107,8 +107,17 @@ def first_message(a: Analysis, settings: Settings, title: str) -> str:
                      f"могу предложить {fmt_rub(a.start_price)}.")
     else:
         lines.append(f"Готов рассмотреть покупку за {fmt_rub(a.start_price)}.")
-    lines.append("Если вам удобно, могу подъехать в ближайшие дни, посмотреть и проверить на месте; "
-                 "оплата при встрече после проверки.")
+    lg = a.logistics
+    if lg.mode == "delivery":
+        lines.append("Готов оформить покупку через Авито Доставку с оплатой на платформе. "
+                     "Пришлите, пожалуйста, видео, как товар включается и работает"
+                     + (" и как проявляется неисправность." if a.defects.has_defects else "."))
+    elif lg.mode == "pickup":
+        lines.append(f"Могу подъехать в {lg.city} в ближайшие дни, посмотреть и проверить на месте; "
+                     "оплата при встрече после проверки.")
+    else:
+        lines.append("Если вам удобно, могу подъехать в ближайшие дни, посмотреть и проверить на месте; "
+                     "оплата при встрече после проверки.")
     if any(i.symptom == "unknown_fault" for i in a.defects.items):
         lines.append("Подскажите, пожалуйста, что именно не работает и проводилась ли диагностика?")
     return "\n".join(lines) + _signature(settings)
@@ -208,7 +217,9 @@ class Negotiator:
                                           target_price=min(state["target_price"] or 0, a.target_price or 0))
             state = self.storage.negotiation(listing_id)
 
-        outcome = self._decide(state, text, seller_price, max_price, new_facts)
+        latest = self.storage.latest_analysis(listing_id)
+        remote = bool(latest and latest.logistics.mode == "delivery")
+        outcome = self._decide(state, text, seller_price, max_price, new_facts, remote)
         if outcome.draft:
             self.storage.add_message(listing_id, "out", outcome.draft, price=outcome.seller_price, sent=False)
         values = dict(status=outcome.status.value, next_step=outcome.next_step)
@@ -243,7 +254,7 @@ class Negotiator:
         return a
 
     def _decide(self, state: dict, text: str, seller_price: int | None, max_price: int | None,
-                new_facts: list[str]) -> ReplyOutcome:
+                new_facts: list[str], remote: bool = False) -> ReplyOutcome:
         target = state.get("target_price") or 0
         last_offer = state.get("last_offer") or state.get("start_price") or 0
         rounds = state.get("rounds") or 0
@@ -274,8 +285,12 @@ class Negotiator:
                                 notify_user=True, new_facts=new_facts)
         if seller_price is not None:
             if seller_price <= target:
-                draft = (f"Спасибо! {fmt_rub(seller_price)} мне подходит. Когда удобно встретиться, "
-                         f"чтобы я посмотрел и проверил? Оплата на месте после проверки.{sig}")
+                if remote:
+                    draft = (f"Спасибо! {fmt_rub(seller_price)} мне подходит. Как удобнее оформить "
+                             f"через Авито Доставку по этой цене?{sig}")
+                else:
+                    draft = (f"Спасибо! {fmt_rub(seller_price)} мне подходит. Когда удобно встретиться, "
+                             f"чтобы я посмотрел и проверил? Оплата на месте после проверки.{sig}")
                 return ReplyOutcome("counter", seller_price, NS.AGREED,
                                     "Встречная цена в пределах целевой — согласовать осмотр; "
                                     "покупка только после проверки и подтверждения пользователя",
@@ -287,7 +302,8 @@ class Negotiator:
                                         f"решение за пользователем", notify_user=True, new_facts=new_facts)
                 offer = floor100((last_offer + seller_price) / 2)
                 offer = min(max(offer, last_offer), max_price)
-                draft = (f"Понимаю вас. Могу предложить {fmt_rub(offer)} и забрать в удобное для вас время, "
+                handover = "сразу оформить заказ с доставкой" if remote else "забрать в удобное для вас время"
+                draft = (f"Понимаю вас. Могу предложить {fmt_rub(offer)} и {handover}, "
                          f"без долгих согласований.{sig}")
                 return ReplyOutcome("counter", seller_price, NS.COUNTER_OFFER,
                                     f"Предложить {fmt_rub(offer)} (в пределах лимита)", draft=draft,
@@ -296,7 +312,8 @@ class Negotiator:
             if rounds < self.settings.negotiation_max_rounds and last_offer < max_price:
                 offer = floor100(max_price)
                 draft = (f"Спасибо за ответ. С учётом {'ремонта и рисков' if state.get('strategy', '').startswith('C') else 'цен на аналогичные предложения'} "
-                         f"больше {fmt_rub(offer)} предложить не могу. Если вас устроит — готов подъехать.{sig}")
+                         f"больше {fmt_rub(offer)} предложить не могу. Если вас устроит — "
+                         f"{'готов оформить заказ' if remote else 'готов подъехать'}.{sig}")
                 return ReplyOutcome("counter", seller_price, NS.COUNTER_OFFER,
                                     f"Последнее предложение {fmt_rub(offer)}; при отказе — отложить и следить за ценой",
                                     draft=draft, new_facts=new_facts)

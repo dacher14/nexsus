@@ -144,6 +144,16 @@ class MarketEstimate:
 
 
 @dataclass
+class Logistics:
+    mode: str                         # local / pickup / delivery / unavailable / unknown
+    city: str = ""
+    extra_cost: int = 0               # дорога или доставка сверх обычного самовывоза по городу
+    extra_days: int = 0
+    inspect_before_payment: bool = True
+    note: str = ""
+
+
+@dataclass
 class RedFlag:
     code: str
     label: str
@@ -272,6 +282,7 @@ class Analysis:
     asking_price: int
     market: MarketEstimate
     defects: DefectAnalysis
+    logistics: Logistics = field(default_factory=lambda: Logistics("local"))
     strategies: list[Strategy] = field(default_factory=list)
     best_strategy: str | None = None
     liquidity: int = 5

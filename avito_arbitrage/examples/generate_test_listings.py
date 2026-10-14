@@ -93,7 +93,9 @@ WORKING = ["Отличное состояние, всё работает. Пол
            "Всё работает, без нареканий. Продаю в связи с покупкой нового.",
            "Как новый, коробка и чек есть. Без торга."]
 DISTRICTS = ["Центральный", "Северный", "Южный", "Западный", "Восточный"]
-CITY = "Тестовый город"
+# домашний рынок — Тюмень; часть объявлений из соседних и дальних городов
+CITIES = [("Тюмень", "tyumen", 60), ("Ялуторовск", "yalutorovsk", 6), ("Курган", "kurgan", 6),
+          ("Екатеринбург", "ekaterinburg", 12), ("Москва", "moskva", 12), ("", "", 4)]
 
 
 def generate(seed: int = 42) -> list[dict]:
@@ -106,9 +108,10 @@ def generate(seed: int = 42) -> list[dict]:
         nonlocal next_id
         next_id += rnd.randint(1, 97)
         slug = "_".join(title.lower().split()[:3])
+        city, city_slug, _ = rnd.choices(CITIES, weights=[w for *_, w in CITIES])[0]
         item = {
-            "url": f"https://example.invalid/avito-test/{cat}/{slug}_{next_id}",
-            "title": title, "price": price, "description": desc, "city": CITY,
+            "url": f"https://example.invalid/avito-test/{city_slug or 'unknown'}/{cat}/{slug}_{next_id}",
+            "title": title, "price": price, "description": desc, "city": city,
             "district": rnd.choice(DISTRICTS), "seller_id": f"seller_{rnd.randint(10000, 99999)}",
             "published_at": (today - timedelta(days=rnd.randint(0, 20))).isoformat(),
             "photos_count": rnd.choice([0, 3, 5, 8]) if "photos" not in extra else extra.pop("photos"),

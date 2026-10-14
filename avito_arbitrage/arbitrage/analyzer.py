@@ -8,6 +8,7 @@ from typing import Iterable
 from .categories import CATEGORIES, get_category, infer_category
 from .config import Settings
 from .defects import RepairKnowledgeBase, analyze_defects, load_kb, repair_complexity
+from .geo import logistics_for
 from .economics import (Calibration, DealContext, build_strategies, choose_best,
                         negotiation_prices)
 from .identify import ModelId, identify_model
@@ -82,7 +83,7 @@ class Analyzer:
             if p.defects.critical_flags:
                 continue
             index.add(Comp(p.model_key, p.family_key, p.listing.price, p.is_working_comp,
-                           p.listing.listing_id))
+                           p.listing.listing_id, city=p.listing.city))
         return index
 
     # --- шаг 2: полный анализ ---
@@ -97,8 +98,9 @@ class Analyzer:
         defects.llm_used = p.defects.llm_used
         liq = liquidity(cat, market, defects, self.today)
         days = days_to_sell(cat, liq)
+        logistics = logistics_for(listing.city, cat.size, s)
 
-        ctx = DealContext(listing.price, cat, market, defects, s, days, calib, self.capital_in_use)
+        ctx = DealContext(listing.price, cat, market, defects, s, days, calib, self.capital_in_use, logistics)
         strategies = build_strategies(ctx)
         best = choose_best(strategies)
 
@@ -106,15 +108,15 @@ class Analyzer:
                           and not defects.is_parts_listing
                           and listing.price < s.suspicious_price_ratio * market.working_median)
         held_days = best.scenarios["base"].days_held if best else days
-        risk, risks = risk_score(defects, market, best, s, suspicious, held_days)
+        risk, risks = risk_score(defects, market, best, s, suspicious, held_days, logistics)
         score, components = rating(best, market, defects, liq, s, listing.photos_count, listing.description,
-                                   risk=risk, suspicious_price=suspicious)
+                                   risk=risk, suspicious_price=suspicious, logistics=logistics)
 
         a = Analysis(
             listing_id=listing.listing_id, analyzed_at=now_iso(), category=p.category,
             category_name=cat.name, brand=p.model.brand, model=p.model.model, model_key=p.model_key,
             model_confidence=p.model.confidence, asking_price=listing.price, market=market,
-            defects=defects, strategies=strategies, best_strategy=best.code if best else None,
+            defects=defects, logistics=logistics, strategies=strategies, best_strategy=best.code if best else None,
             liquidity=liq, days_to_sell=days, risk=risk, repair_complexity=repair_complexity(defects),
             rating=score, rating_components=components, critical=bool(defects.critical_flags),
             insufficient_data=market.confidence == "нет данных", risks=risks,
@@ -127,7 +129,7 @@ class Analyzer:
             a.start_price, a.target_price, a.max_deal_price = negotiation_prices(
                 listing.price, best.max_purchase, defects.has_defects or defects.is_untested,
                 motivated="motivated_seller" in defects.signals, no_bargain="no_bargain" in defects.signals)
-        a.checks = defects.checks + ["Не вносить предоплату до осмотра и проверки товара"]
+        a.checks = defects.checks + _logistics_checks(logistics, defects.has_defects)
         self._recommend(a, best, suspicious)
         self._explain(a, best)
         return a
@@ -146,6 +148,9 @@ class Analyzer:
             return
         if not s.category_allowed(a.category):
             a.recommendation, a.action = "ПРОПУСТИТЬ: категория исключена настройками", "Исключить"
+            return
+        if a.logistics.mode == "unavailable":
+            a.recommendation, a.action = f"ПРОПУСТИТЬ: {a.logistics.note}", "Пропустить"
             return
         if a.insufficient_data:
             a.recommendation = "НЕДОСТАТОЧНО ДАННЫХ: нет аналогов для оценки — уточнить модель, найти аналоги"
@@ -208,8 +213,24 @@ class Analyzer:
                 a.notes.append(f"Прибыль на день владения (база): {fmt_rub(base.profit / base.days_held)}")
         if a.defects.items:
             parts.append("дефект: " + ", ".join(i.label for i in a.defects.items))
+        if a.logistics.mode in ("pickup", "delivery"):
+            parts.append(a.logistics.note)
+            a.notes.append(f"Логистика: {a.logistics.note}")
         a.main_argument = "; ".join(parts) or "—"
         a.main_risk = a.risks[0] if a.risks else "Явных рисков в тексте не найдено"
         if a.defects.llm_used:
             a.notes.append("Использован LLM-анализ описания (гипотезы)")
         a.notes.append(f"Оценка: {m.basis}; уверенность {m.confidence}; {band(a.rating)}")
+
+
+def _logistics_checks(logistics, defective: bool) -> list[str]:
+    checks = ["Не вносить предоплату до осмотра и проверки товара"]
+    if logistics.mode == "delivery":
+        checks = ["Покупать только через доставку с оплатой на платформе Avito; не переводить деньги продавцу напрямую",
+                  "До заказа запросить видео включения и работы" + (" и самого дефекта" if defective else ""),
+                  "Проверить товар при получении в пункте выдачи, до подтверждения получения"]
+    elif logistics.mode == "pickup":
+        checks.append(f"Согласовать встречу заранее: {logistics.note}")
+    elif logistics.mode == "unknown":
+        checks.append("Уточнить город и способ передачи товара")
+    return checks

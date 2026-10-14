@@ -5,6 +5,8 @@
 источник не подключён, это сообщается явно.
 
 Поддерживаемые источники:
+  * страницы Avito, сохранённые пользователем в своём браузере (.html/.mhtml) —
+    поиск или отдельные объявления (html_import.py);
   * JSON/CSV-файлы — выгрузка из разрешённого источника или ручной сбор
     (формат описан в README, пример — examples/test_listings.json);
   * AvitoAuthorizedSource — точка подключения официальной/лицензированной
@@ -17,6 +19,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
+from .html_import import HTML_SUFFIXES, SavedPageSource
 from .models import Listing
 
 
@@ -76,13 +79,34 @@ class AvitoAuthorizedSource:
             "(см. README, раздел «Источники данных») или загрузите выгрузку в JSON/CSV.")
 
 
+SUPPORTED = (".json", ".csv") + HTML_SUFFIXES
+
+
 def source_for(path: str | Path) -> ListingSource:
     path = Path(path)
     if path.suffix.lower() == ".json":
         return JsonFileSource(path)
     if path.suffix.lower() == ".csv":
         return CsvFileSource(path)
-    raise ValueError(f"Неподдерживаемый формат: {path.suffix} (ожидается .json или .csv)")
+    if path.suffix.lower() in HTML_SUFFIXES:
+        return SavedPageSource([path])
+    raise ValueError(f"Неподдерживаемый формат: {path.suffix} (ожидается {', '.join(SUPPORTED)})")
+
+
+def sources_for(paths: Iterable[str | Path]) -> list[ListingSource]:
+    """Файлы и папки: папка разворачивается во все поддерживаемые файлы внутри,
+    сохранённые страницы Avito объединяются в один источник."""
+    files: list[Path] = []
+    for p in map(Path, paths):
+        if p.is_dir():
+            files += sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in SUPPORTED)
+        else:
+            files.append(p)
+    pages = [f for f in files if f.suffix.lower() in HTML_SUFFIXES]
+    sources = [source_for(f) for f in files if f.suffix.lower() not in HTML_SUFFIXES]
+    if pages:
+        sources.append(SavedPageSource(pages))
+    return sources
 
 
 def load_listings(sources: Iterable[ListingSource]) -> tuple[list[Listing], list[str]]:

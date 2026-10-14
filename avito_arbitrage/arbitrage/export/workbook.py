@@ -435,6 +435,21 @@ def market_tables(data: WorkbookInput) -> list[Table]:
         Column("Запрос", 40), Column("Уникальных объявлений", 12, "int"), Column("Выгодных", 10, "int"),
         Column("Критических", 10, "int"), Column("Лучший рейтинг", 10, "int")], query_rows)
 
+    by_city: dict[str, list[Analysis]] = defaultdict(list)
+    for a in analyses:
+        by_city[data.listings[a.listing_id].city or "не указан"].append(a)
+    mode_names = {"local": "домашний город", "pickup": "самовывоз", "delivery": "доставка",
+                  "unavailable": "не возим", "unknown": "не указан"}
+    city_rows = [[city, len(items), mode_names.get(items[0].logistics.mode, items[0].logistics.mode),
+                  sum(1 for a in items if a in profitable), sum(1 for a in items if a.action == "Торговаться"),
+                  _median([a.discount for a in items if a.discount is not None]),
+                  round(statistics.mean(a.risk for a in items))]
+                 for city, items in sorted(by_city.items(), key=lambda kv: -len(kv[1]))]
+    cities = Table("По городам", [
+        Column("Город", 22), Column("Объявлений", 11, "int"), Column("Логистика", 16),
+        Column("Выгодных", 10, "int"), Column("После торга", 10, "int"), Column("Медианный дисконт", 12, "pct"),
+        Column("Средний риск", 10, "int")], city_rows)
+
     listings = [data.listings[a.listing_id] for a in analyses]
     pct = lambda k: f"{round(100 * k / n)}%"  # noqa: E731
     quality = Table("Полнота и качество данных", [Column("Показатель", 50), Column("Значение", 20)], [
@@ -448,7 +463,7 @@ def market_tables(data: WorkbookInput) -> list[Table]:
         ["Использован LLM-анализ", pct(sum(1 for a in analyses if a.defects.llm_used))],
         ["Основа рыночной оценки", "цены предложений, не завершённых сделок"],
     ])
-    tables = [summary, categories, models, defects, queries, quality]
+    tables = [summary, categories, cities, models, defects, queries, quality]
     if data.category_performance:
         tables.append(Table("Фактические результаты по категориям (завершённые сделки)", [
             Column("Категория", 20), Column("Сделок", 8, "int"), Column("Прибыль", 12, "rub"),
@@ -460,7 +475,11 @@ def market_tables(data: WorkbookInput) -> list[Table]:
 
 
 SETTING_LABELS = {
-    "region": "Регион", "nearby_areas": "Соседние районы", "capital_total": "Бюджет (капитал), ₽",
+    "region": "Домашний город (перепродажа)", "pickup_distances_km": "Самовывоз: города и км в одну сторону",
+    "max_pickup_km": "Макс. расстояние самовывоза, км", "travel_cost_per_km": "Дорога, ₽/км",
+    "delivery_cost": "Доставка из дальних городов, ₽ (None — не возим)", "delivery_days": "Срок доставки, дн.",
+    "inspection_value": "Ценность осмотра до оплаты, ₽", "remote_purchase_risk": "Надбавка к риску при доставке",
+    "search_cities": "Города поиска", "capital_total": "Бюджет (капитал), ₽",
     "capital_reserve": "Резервный капитал, ₽", "max_purchase_price": "Максимальная цена одной покупки, ₽",
     "min_net_profit": "Минимальная чистая прибыль, ₽", "min_roi": "Минимальный ROI",
     "max_days_to_sell": "Допустимый срок перепродажи, дн.", "max_loss_share_of_capital": "Макс. потеря на сделку (доля капитала)",

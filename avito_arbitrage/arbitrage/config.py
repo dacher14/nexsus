@@ -20,9 +20,20 @@ STRATEGIES = ("working", "diy", "service", "as_is")
 class Settings:
     currency: str = "RUB"
     marketplace: str = "Avito"
-    # Город пользователя и соседние районы задаются явно; точное местоположение не нужно.
+    # Домашний город: здесь перепродаём. Точное местоположение не нужно.
     region: str = ""
-    nearby_areas: list[str] = field(default_factory=list)
+    # Города, куда готовы съездить за товаром: км в одну сторону (дорога = 2 × км × travel_cost_per_km).
+    pickup_distances_km: dict[str, int] = field(default_factory=dict)
+    max_pickup_km: int = 350
+    travel_cost_per_km: float = 7.0
+    # Доставка из дальних городов, ₽ по габаритам; None — не возим (крупногабарит).
+    delivery_cost: dict[str, int | None] = field(
+        default_factory=lambda: {"small": 450, "medium": 900, "large": 2500, "bulky": None})
+    delivery_days: int = 5
+    inspection_value: int = 1500          # сколько стоит возможность осмотреть до оплаты (выбор поездка/доставка)
+    remote_purchase_risk: int = 10        # надбавка к риску: нельзя проверить до оплаты
+    # Где искать (план поиска и ссылки для ручного поиска); пусто — домашний город + вся Россия.
+    search_cities: list[str] = field(default_factory=list)
 
     # Капитал и лимиты
     capital_total: int = 30_000

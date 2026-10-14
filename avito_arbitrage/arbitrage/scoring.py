@@ -5,7 +5,7 @@ from datetime import date
 
 from .categories import Category
 from .config import Settings
-from .models import DefectAnalysis, MarketEstimate, Strategy
+from .models import DefectAnalysis, Logistics, MarketEstimate, Strategy
 
 RATING_BANDS = [(85, "Приоритетная проверка"), (70, "Перспективная сделка"),
                 (55, "Наблюдать или торговаться"), (0, "Обычно пропустить")]
@@ -36,7 +36,8 @@ def days_to_sell(cat: Category, liq: int) -> int:
 
 
 def risk_score(defects: DefectAnalysis, market: MarketEstimate, best: Strategy | None,
-               settings: Settings, suspicious_price: bool, days: int) -> tuple[int, list[str]]:
+               settings: Settings, suspicious_price: bool, days: int,
+               logistics: Logistics | None = None) -> tuple[int, list[str]]:
     risks: list[str] = []
     risk = {None: 8, "A": 20, "B": 35, "C": 55}[defects.defect_class]
     if defects.defect_class:
@@ -66,6 +67,17 @@ def risk_score(defects: DefectAnalysis, market: MarketEstimate, best: Strategy |
     if best and best.max_loss > settings.capital_total * 0.15:
         risk += 10
         risks.append(f"Максимальная потеря капитала {best.max_loss} ₽")
+    if logistics and logistics.mode == "delivery":
+        risk += settings.remote_purchase_risk
+        risks.append("Покупка с доставкой: проверить можно только при получении")
+        if defects.has_defects or defects.is_untested:
+            risk += 10
+            risks.append("Неисправный/непроверенный товар без осмотра до оплаты")
+    elif logistics and logistics.mode == "unknown":
+        risk += 5
+        risks.append("Город в объявлении не указан")
+    elif logistics and logistics.mode == "unavailable":
+        risks.append(logistics.note)
     if defects.critical_flags:
         risk = max(risk, 90)
     return int(clamp(risk, 0, 100)), risks
@@ -73,7 +85,8 @@ def risk_score(defects: DefectAnalysis, market: MarketEstimate, best: Strategy |
 
 def rating(best: Strategy | None, market: MarketEstimate, defects: DefectAnalysis, liq: int,
            settings: Settings, photos_count: int | None, description: str,
-           risk: int = 0, suspicious_price: bool = False) -> tuple[int, dict[str, float]]:
+           risk: int = 0, suspicious_price: bool = False,
+           logistics: Logistics | None = None) -> tuple[int, dict[str, float]]:
     comp: dict[str, float] = {}
     if best and best.scenarios:
         cons = best.scenarios["conservative"]
@@ -108,6 +121,8 @@ def rating(best: Strategy | None, market: MarketEstimate, defects: DefectAnalysi
         verify -= 2
     if len(description.strip()) < 40:
         verify -= 2
+    if logistics and logistics.mode == "delivery":
+        verify -= 3  # осмотр только при получении
     comp["проверяемость"] = clamp(verify, 0, 10)
 
     total = round(sum(comp.values()))

@@ -17,7 +17,7 @@ from .learning import calibrations, category_performance
 from .llm import LLMAnalyzer
 from .market import Comp
 from .models import Analysis, ListingStatus, parse_price
-from .sources import load_listings, source_for
+from .sources import load_listings, source_for, sources_for
 from .storage import Storage
 
 log = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ class CampaignResult:
 
 
 def load_comps(path: str | Path) -> list[Comp]:
-    """Внешние аналоги: title, price, condition (исправен/неисправен), category — необязательно."""
+    """Внешние аналоги: title, price, condition (исправен/неисправен); category и city — необязательно."""
     comps = []
     for raw in source_for(path).fetch():
         price = parse_price(raw.get("price"))
@@ -56,7 +56,7 @@ def load_comps(path: str | Path) -> list[Comp]:
         cond = str(raw.get("condition") or "working").lower()
         working = any(w in cond for w in WORKING_WORDS) and "неисправ" not in cond
         comps.append(Comp(mid.key(category), mid.family_key(category), price, working,
-                          source=str(raw.get("source") or Path(path).name)))
+                          source=str(raw.get("source") or Path(path).name), city=str(raw.get("city") or "")))
     return comps
 
 
@@ -79,7 +79,8 @@ def run_campaign(storage: Storage, settings: Settings, inputs: Iterable[str | Pa
     """full_recheck=True: объявления из базы, отсутствующие в новой выгрузке, помечаются
     как недоступные (не как проданные) — используйте только для полной повторной проверки."""
     result = CampaignResult()
-    listings, errors = load_listings([source_for(p) for p in inputs])
+    inputs = list(inputs)
+    listings, errors = load_listings(sources_for(inputs))
     result.errors = errors
     result.invalid = len(errors)
     dd = deduplicate(listings)

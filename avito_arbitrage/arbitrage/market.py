@@ -12,6 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .config import Settings
+from .geo import normalize_city
 from .models import MarketEstimate, now_iso
 
 _CONF_STEPS = ["нет данных", "низкая", "средняя", "высокая"]
@@ -25,6 +26,7 @@ class Comp:
     working: bool
     listing_id: str | None = None
     source: str = "campaign"
+    city: str = ""
 
 
 def _quantiles(prices: list[int]) -> tuple[float, float, float]:
@@ -61,18 +63,37 @@ class MarketIndex:
         self.by_model[comp.model_key].append(comp)
         self.by_family[comp.family_key].append(comp)
 
-    def _prices(self, comps: list[Comp], working: bool, exclude_id: str | None) -> list[int]:
-        return [c.price for c in comps if c.working == working and c.listing_id != exclude_id]
+    def _prices(self, comps: list[Comp], working: bool, exclude_id: str | None,
+                city: str | None = None) -> list[int]:
+        return [c.price for c in comps if c.working == working and c.listing_id != exclude_id
+                and (city is None or normalize_city(c.city) == city)]
+
+    def _working(self, model_key: str, family_key: str, exclude_id: str | None,
+                 city: str | None) -> tuple[list[int], str]:
+        working = self._prices(self.by_model.get(model_key, []), True, exclude_id, city)
+        if len(working) < 2 and family_key != model_key:
+            fam = self._prices(self.by_family.get(family_key, []), True, exclude_id, city)
+            if len(fam) > len(working):
+                return fam, "family"
+        return working, "model"
 
     def estimate(self, model_key: str, family_key: str, settings: Settings,
                  exclude_id: str | None = None, resale_calibration: float = 1.0) -> MarketEstimate:
+        """Оценка цены перепродажи. При заданном домашнем городе предпочтительны его аналоги:
+        перепродаём там, а цены в других городах могут заметно отличаться."""
         est = MarketEstimate(model_key=model_key, estimated_at=now_iso())
-        working = self._prices(self.by_model.get(model_key, []), True, exclude_id)
-        level = "model"
-        if len(working) < 2 and family_key != model_key:
-            fam = self._prices(self.by_family.get(family_key, []), True, exclude_id)
-            if len(fam) > len(working):
-                working, level = fam, "family"
+        home = normalize_city(settings.region) or None
+        working, level = self._working(model_key, family_key, exclude_id, None)
+        other_cities = False
+        if home:
+            local, local_level = self._working(model_key, family_key, exclude_id, home)
+            if len(trim_outliers(local)) >= 4:
+                working, level = local, local_level
+                est.basis = f"цены предложений в городе {settings.region} (не цены завершённых сделок)"
+            elif len(working) > len(local):
+                other_cities = True
+                est.basis = (f"цены предложений, в т.ч. других городов — в городе {settings.region} "
+                             f"аналогов: {len(local)} (не цены завершённых сделок)")
         broken = self._prices(self.by_model.get(model_key, []), False, exclude_id)
         if len(broken) < 2:
             broken = self._prices(self.by_family.get(family_key, []), False, exclude_id) or broken
@@ -91,6 +112,8 @@ class MarketIndex:
         cv = statistics.pstdev(working) / med if med else 1.0
         conf = "высокая" if n >= 8 and cv <= 0.25 else "средняя" if n >= 4 else "низкая"
         if level == "family":
+            conf = _downgrade(conf)
+        if other_cities:
             conf = _downgrade(conf)
 
         ratio = settings.ask_to_sale_ratio * resale_calibration

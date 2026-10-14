@@ -2,6 +2,7 @@ openpyxl>=3.1
 PyYAML>=6.0
 SQLAlchemy>=2.0
 requests>=2.31
+beautifulsoup4>=4.12
 pytest>=8
 # по желанию:
 # anthropic            — LLM-анализ описаний (llm_enabled: true)
