@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 from .config import Settings
 from .models import Logistics
 
-# slug в адресе Avito → город (для разбора сохранённых страниц и ссылок поиска)
+# Названия для показа самых частых городов по slug из адреса Avito.
 CITY_SLUGS = {
     "tyumen": "Тюмень", "yalutorovsk": "Ялуторовск", "zavodoukovsk": "Заводоуковск",
     "tobolsk": "Тобольск", "ishim": "Ишим", "kurgan": "Курган", "shadrinsk": "Шадринск",
@@ -22,7 +22,8 @@ CITY_SLUGS = {
     "novosibirsk": "Новосибирск", "perm": "Пермь", "moskva": "Москва", "sankt-peterburg": "Санкт-Петербург",
     "kazan": "Казань", "ufa": "Уфа", "samara": "Самара", "rossiya": "",
 }
-SLUG_BY_CITY = {v: k for k, v in CITY_SLUGS.items() if v}
+_TRANSLIT = dict(zip("абвгдезийклмнопрстуфхыэ", "abvgdeziyklmnoprstufhye")) | {
+    "ж": "zh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch", "ю": "yu", "я": "ya", "ъ": "", "ь": "", "ё": "e"}
 
 
 def normalize_city(name: str | None) -> str:
@@ -31,29 +32,43 @@ def normalize_city(name: str | None) -> str:
     return name.split(",")[0].strip()
 
 
+def city_key(name: str | None) -> str:
+    """Ключ для сравнения городов: «Тюмень», «г. тюмень» и slug «tyumen» совпадают."""
+    norm = normalize_city(name)
+    return re.sub(r"\s+", "_", "".join(_TRANSLIT.get(ch, ch) for ch in norm))
+
+
+def same_city(a: str | None, b: str | None) -> bool:
+    return bool(city_key(a)) and city_key(a) == city_key(b)
+
+
 def city_from_slug(slug: str) -> str:
-    return CITY_SLUGS.get(slug, slug.replace("_", " ").replace("-", " ").title())
+    """Город из адреса объявления. Неизвестный slug остаётся как есть — он всё равно
+    сравнивается с настройками через city_key (tavda == Тавда)."""
+    return CITY_SLUGS.get(slug, slug)
 
 
 def logistics_for(city: str, size: str, settings: Settings) -> Logistics:
     if not settings.region:
         return Logistics("local", note="домашний город не задан — логистика не учитывается")
-    home = normalize_city(settings.region)
-    where = normalize_city(city)
+    where = city_key(city)
     if not where:
         return Logistics("unknown", note="город в объявлении не указан — уточнить у продавца")
-    city = re.sub(r"^(?:г\.|город)\s*", "", city.strip())
-    if where == home:
-        return Logistics("local", city=city)
-    distances = {normalize_city(k): v for k, v in settings.pickup_distances_km.items()}
-    km = distances.get(where)
-    delivery = settings.delivery_cost.get(size)
+    distances = {city_key(k): (k, v) for k, v in (settings.pickup_distances_km or {}).items()}
+    if where == city_key(settings.region):
+        return Logistics("local", city=settings.region)
+    display, km = distances.get(where, (re.sub(r"^(?:г\.|город)\s*", "", city.strip()), None))
+    city = display
+    delivery = (settings.delivery_cost or {}).get(size)
     if km is not None and km <= settings.max_pickup_km:
-        cost = round(2 * km * settings.travel_cost_per_km)
+        travel = round(2 * km * settings.travel_cost_per_km)
+        loading = settings.transport_cost.get(size, 0) if size in ("large", "bulky") else 0
+        cost = travel + loading
         # поездка выгоднее, если дешевле доставки с учётом ценности осмотра до оплаты
         if delivery is None or cost <= delivery + settings.inspection_value:
+            extra = f" + погрузка {loading} ₽" if loading else ""
             return Logistics("pickup", city=city, extra_cost=cost, extra_days=1 if km > 150 else 0,
-                             note=f"самовывоз: {city}, ~{km} км в одну сторону, дорога ≈{cost} ₽")
+                             note=f"самовывоз: {city}, ~{km} км в одну сторону, дорога ≈{travel} ₽{extra}")
     if delivery is None:
         return Logistics("unavailable", city=city,
                          note=f"крупногабарит в другом городе ({city}) вне зоны самовывоза — доставка нецелесообразна")
@@ -65,7 +80,7 @@ def logistics_for(city: str, size: str, settings: Settings) -> Logistics:
 
 def search_url(city: str, query: str) -> str:
     """Ссылка для ручного поиска в браузере (агент сам Avito не открывает)."""
-    slug = SLUG_BY_CITY.get(city)
-    if slug is None:  # город без известного адреса — ищем по всей России с названием города в запросе
-        slug, query = "rossiya", f"{query} {city}".strip()
+    slug = city_key(city) or "rossiya"
+    if city_key(city) in ("rossiya", "россия", "vsya_rossiya"):
+        slug = "rossiya"
     return f"https://www.avito.ru/{slug}?q={quote_plus(query)}"

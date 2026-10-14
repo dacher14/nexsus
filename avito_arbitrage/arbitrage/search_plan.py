@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .categories import CATEGORIES
-from .geo import search_url
+from .geo import city_key, search_url
 
 # Модели с высокой ликвидностью — отправная точка; список расширяется по статистике.
 SEED_MODELS: dict[str, list[str]] = {
@@ -57,15 +57,22 @@ def build_plan(categories: list[str] | None = None, cities: list[str] | None = N
     """Широкие проходы — по каждому городу; поиск по симптомам и опечаткам — по домашнему
     городу и по всей России (там неисправные товары чаще продают с доставкой)."""
     cats = categories or [c for c in CATEGORIES if CATEGORIES[c].priority in ("A", "B")]
-    cities = list(dict.fromkeys(cities or [home, ""]))
-    deep_cities = list(dict.fromkeys([home, ""]))
+    def unique(names: list[str]) -> list[str]:
+        seen: dict[str, str] = {}
+        for name in names:
+            seen.setdefault(city_key(name), name)
+        return list(seen.values())
+
+    cities = unique(cities or [home, ""])
+    deep_cities = unique([home, ""])
     plan: list[Query] = []
     for city in cities:
         for cat in cats:
             plan.append(Query(1, "Широкий сбор", cat, CATEGORIES[cat].name.lower(), city))
             for model in SEED_MODELS.get(cat, []):
-                plan.append(Query(1, "Широкий сбор", cat, model, city))
-                plan.append(Query(2, "Недооценённые (сортировка по цене)", cat, model, city))
+                # проход 2 (недооценённые) — та же выдача, отсортированная по цене вручную;
+                # дисконт к аналогам считает анализ, отдельная ссылка не нужна
+                plan.append(Query(1, "Широкий сбор (отсортируйте по цене)", cat, model, city))
             plan.append(Query(3, "Неисправные", cat, f"{CATEGORIES[cat].name.lower()} на запчасти", city))
     for city in deep_cities:
         for cat in cats:

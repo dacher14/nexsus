@@ -98,8 +98,11 @@ def sources_for(paths: Iterable[str | Path]) -> list[ListingSource]:
     сохранённые страницы Avito объединяются в один источник."""
     files: list[Path] = []
     for p in map(Path, paths):
+        if not p.exists():
+            raise FileNotFoundError(f"Не найден файл или папка: {p}")
         if p.is_dir():
-            files += sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in SUPPORTED)
+            files += sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in SUPPORTED
+                            and not any(part.startswith(".") for part in f.relative_to(p).parts))
         else:
             files.append(p)
     pages = [f for f in files if f.suffix.lower() in HTML_SUFFIXES]
@@ -115,6 +118,9 @@ def load_listings(sources: Iterable[ListingSource]) -> tuple[list[Listing], list
     errors: list[str] = []
     for source in sources:
         for n, raw in enumerate(source.fetch(), start=1):
+            if "_error" in raw:
+                errors.append(f"{source.name}: {raw['_error']}")
+                continue
             try:
                 listings.append(Listing.from_dict(raw, source=source.name))
             except (ValueError, TypeError) as exc:

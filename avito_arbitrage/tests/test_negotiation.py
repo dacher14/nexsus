@@ -70,13 +70,56 @@ def test_counter_within_limit_gets_midpoint(setup, storage):
         assert offered <= state["max_price"]
 
 
-def test_counter_above_max_final_offer_then_deferred(setup, storage):
+def test_counter_above_max_steps_up_without_revealing_max(setup, storage):
     neg, lid, state = _start(setup, storage)
-    out = neg.process_reply(lid, "Нет, 11000 минимум")
-    assert out.status == NS.COUNTER_OFFER
-    assert parse_price_mentions(out.draft)[-1] <= state["max_price"]
-    out = neg.process_reply(lid, "Нет, 11000 и точка")
-    assert out.status == NS.DEFERRED
+    offers, status = [], None
+    for _ in range(6):
+        out = neg.process_reply(lid, "Нет, 11000 минимум")
+        status = out.status
+        if out.draft:
+            offers.append(parse_price_mentions(out.draft)[-1])
+            assert "не могу" not in out.draft and "больше" not in out.draft
+        if status == NS.DEFERRED:
+            break
+    assert status == NS.DEFERRED
+    assert offers == sorted(set(offers)) and all(o < state["max_price"] for o in offers)
+
+
+def test_discount_and_delivery_numbers_are_not_seller_price(setup, storage):
+    neg, lid, state = _start(setup, storage)
+    out = neg.process_reply(lid, "Могу скинуть 500 ₽, не больше")
+    assert out.status != NS.AGREED and out.seller_price is None
+    out = neg.process_reply(lid, "Отдам за 9 900, доставка около 400 ₽ за ваш счёт")
+    assert out.seller_price == 9900
+
+
+@pytest.mark.parametrize("reply", ["Не пиши мне больше", "Хватит мне писать", "Не надо мне писать", "Отвали"])
+def test_informal_stop_requests(setup, storage, reply):
+    neg, lid, _ = _start(setup, storage)
+    assert neg.process_reply(lid, reply).status == NS.CLOSED
+
+
+def test_agreement_with_new_defect_never_exceeds_lowered_max(setup, storage):
+    neg, lid, state = _start(setup, storage)
+    out = neg.process_reply(lid, "Ладно, согласен. Только честно: экран разбит и Face ID не работает")
+    new_state = storage.negotiation(lid)
+    assert new_state["max_price"] < state["max_price"]
+    assert out.status != NS.AGREED or (out.seller_price or 0) <= new_state["max_price"]
+
+
+def test_prepare_refreshes_stale_draft_after_price_drop(setup, storage):
+    neg, lid = setup
+    storage.set_user_status(lid, UserStatus.APPROVED)
+    neg.authorize(PHRASE)
+    _, first, _ = neg.prepare(lid)
+    listing = storage.get_listing(lid)
+    listing.price = 7500
+    storage.upsert_listing(listing)
+    _, second, note = neg.prepare(lid)
+    state = storage.negotiation(lid)
+    assert second != first and state["max_price"] <= 7500
+    assert parse_price_mentions(second)[-1] <= 7500
+    assert len([m for m in storage.messages(lid) if m["direction"] == "out"]) == 1
 
 
 def test_agreement_is_not_purchase(setup, storage):

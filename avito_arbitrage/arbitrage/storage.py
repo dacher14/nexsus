@@ -10,7 +10,8 @@ from typing import Any, Iterable
 
 import sqlalchemy as sa
 
-from .models import Analysis, Listing, ListingStatus, NegotiationStatus, UserStatus, now_iso
+from .models import (Analysis, Listing, ListingStatus, NegotiationStatus, UserStatus, merge_listing_data,
+                     now_iso)
 
 metadata = sa.MetaData()
 
@@ -141,9 +142,9 @@ class Storage:
                 c.execute(price_history.insert().values(listing_id=listing.listing_id,
                                                         price=listing.price, observed_at=ts))
                 return "created"
-            data["discovered_at"] = row.data.get("discovered_at", row.first_seen)
+            data = merge_listing_data({"discovered_at": row.first_seen, **row.data}, data)
             c.execute(listings.update().where(listings.c.listing_id == listing.listing_id).values(
-                url=listing.url, title=listing.title, price=listing.price, last_checked=ts, data=data,
+                url=listing.url, title=data["title"], price=listing.price, last_checked=ts, data=data,
                 status=ListingStatus.ACTIVE.value if row.status != ListingStatus.DUPLICATE.value else row.status))
             if row.price != listing.price:
                 c.execute(price_history.insert().values(listing_id=listing.listing_id,
@@ -263,6 +264,13 @@ class Storage:
                 return False
             c.execute(negotiation_messages.update().where(negotiation_messages.c.id == row.id).values(sent=True))
             return True
+
+    def discard_unsent_drafts(self, listing_id: str) -> None:
+        """Устаревшие неотправленные черновики удаляются; отправленные сообщения не трогаются."""
+        with self.engine.begin() as c:
+            c.execute(negotiation_messages.delete().where(
+                negotiation_messages.c.listing_id == listing_id, negotiation_messages.c.direction == "out",
+                negotiation_messages.c.sent.is_(False)))
 
     def messages(self, listing_id: str) -> list[dict]:
         with self.engine.connect() as c:

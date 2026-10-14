@@ -120,6 +120,10 @@ def load_settings(path: str | Path | None = None) -> Settings:
     unknown_strategies = set(data.get("allowed_strategies", [])) - set(STRATEGIES)
     if unknown_strategies:
         raise ValueError(f"Неизвестные стратегии: {', '.join(sorted(unknown_strategies))}")
+    defaults = Settings()
+    for key, value in list(data.items()):
+        if value is None and isinstance(getattr(defaults, key), (dict, list)):
+            data[key] = getattr(defaults, key)  # «ключ:» без значения в YAML — значение по умолчанию
     settings = Settings(**data)
     if os.environ.get("DATABASE_URL"):
         settings.database_url = os.environ["DATABASE_URL"]

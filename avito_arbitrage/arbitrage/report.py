@@ -12,7 +12,8 @@ from .storage import Storage
 
 
 def campaign_report(analyses: list[Analysis], stats: dict, workbook: str | None, settings,
-                    has_synthetic: bool, top_n: int = 10) -> str:
+                    has_synthetic: bool, top_n: int = 10, statuses: dict[str, str] | None = None) -> str:
+    rejected = {lid for lid, st in (statuses or {}).items() if st == "REJECTED"}
     n = len(analyses)
     profitable = [a for a in analyses if a.best and not a.critical and a.best.max_purchase
                   and a.asking_price <= a.best.max_purchase]
@@ -43,7 +44,8 @@ def campaign_report(analyses: list[Analysis], stats: dict, workbook: str | None,
     by_cat = Counter(a.category_name for a in profitable)
     if by_cat:
         lines.append("Категории с лучшими результатами: " + ", ".join(f"{c} ({k})" for c, k in by_cat.most_common(5)))
-    top = sorted((a for a in analyses if a.best and not a.critical and not a.insufficient_data),
+    top = sorted((a for a in analyses if a.best and not a.critical and not a.insufficient_data
+                  and a.listing_id not in rejected),
                  key=lambda a: a.rating, reverse=True)[:top_n]
     if top:
         lines.append("\nЛУЧШИЕ ВОЗМОЖНОСТИ (прогноз, не факт):")
@@ -52,7 +54,7 @@ def campaign_report(analyses: list[Analysis], stats: dict, workbook: str | None,
             lines.append(f"  [{a.rating:>3}] {a.listing_id} {a.brand} {a.model} — цена {fmt_rub(a.asking_price)}, "
                          f"макс. {fmt_rub(a.best.max_purchase)}, конс. прибыль {fmt_rub(cons.profit)}, "
                          f"риск {a.risk}: {a.recommendation}")
-    review = [a for a in analyses if a.action in ("Проверить продавца; только личная встреча", "Дособрать данные")]
+    review = [a for a in analyses if a.action.startswith("Проверить продавца") or a.action == "Дособрать данные"]
     if review:
         lines.append(f"\nТребуют дополнительной проверки: {len(review)} (подозрительная цена или нет аналогов)")
     if workbook:
@@ -72,6 +74,7 @@ def negotiation_report(storage: Storage) -> str:
     if not states:
         return "Переговоры не велись."
     msgs = {lid: storage.messages(lid) for lid in states}
+    drafted = [lid for lid, m in msgs.items() if any(x["direction"] == "out" for x in m)]
     contacted = [lid for lid, m in msgs.items() if any(x["direction"] == "out" and x["sent"] for x in m)]
     replied = [lid for lid, m in msgs.items() if any(x["direction"] == "in" for x in m)]
     status = Counter(s["status"] for s in states.values())
@@ -80,7 +83,8 @@ def negotiation_report(storage: Storage) -> str:
     agreed = [(lid, s) for lid, s in states.items() if s["status"] == NS.AGREED.value]
     lines = [
         "ИТОГИ ПЕРЕГОВОРОВ",
-        f"Черновиков подготовлено: {len(states)}; отправлено пользователем: {len(contacted)}",
+        f"Разрешено переговоров: {len(states)}; с подготовленными сообщениями: {len(drafted)}; "
+        f"отправлено пользователем: {len(contacted)}",
         f"Ответили: {len(replied)}",
         f"Встречная цена: {status.get(NS.COUNTER_OFFER.value, 0)}; отложено: {status.get(NS.DEFERRED.value, 0)}; "
         f"закрыто: {status.get(NS.CLOSED.value, 0)}",

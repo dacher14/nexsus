@@ -124,6 +124,31 @@ class Listing:
         return dataclasses.asdict(self)
 
 
+KEEP_IF_EMPTY = ("description", "seller_id", "seller_name", "condition", "published_at", "photos_count",
+                 "configuration", "district", "brand", "model", "city", "category", "search_query")
+
+
+def merge_listing_data(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Повторно найденное объявление дополняет запись, а не затирает её.
+
+    Цена и заголовок берутся свежие; пустые поля новой записи не стирают известные;
+    фрагмент описания из выдачи поиска не заменяет полное описание со страницы объявления.
+    """
+    merged = dict(new)
+    for key in KEEP_IF_EMPTY:
+        if new.get(key) in (None, "") and old.get(key) not in (None, ""):
+            merged[key] = old[key]
+    old_desc, new_desc = str(old.get("description") or ""), str(new.get("description") or "")
+    snippet = str(new.get("source") or "").startswith("saved-search")
+    if old_desc and (new_desc in old_desc or (snippet and len(old_desc) > len(new_desc))):
+        merged["description"] = old_desc
+    if old.get("discovered_at"):
+        merged["discovered_at"] = old["discovered_at"]
+    if not new.get("title"):
+        merged["title"] = old.get("title", "")
+    return merged
+
+
 @dataclass
 class MarketEstimate:
     model_key: str

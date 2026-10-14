@@ -156,8 +156,9 @@ def test_campaign_from_saved_pages(storage, tyumen, tmp_path):
 def test_search_urls():
     assert search_url("Тюмень", "iPhone 12") == "https://www.avito.ru/tyumen?q=iPhone+12"
     assert search_url("", "ps4").startswith("https://www.avito.ru/rossiya?q=ps4")
-    assert "rossiya" in search_url("Нижний Тагил", "ps4") and "%D0%A2%D0%B0%D0%B3%D0%B8%D0%BB" in search_url(
-        "Нижний Тагил", "ps4")
+    assert search_url("г. тюмень", "ps4") == "https://www.avito.ru/tyumen?q=ps4"
+    assert search_url("Нижний Тагил", "ps4") == "https://www.avito.ru/nizhniy_tagil?q=ps4"
+    assert search_url("Россия", "ps4") == "https://www.avito.ru/rossiya?q=ps4"
 
 
 def test_search_plan_cities():
@@ -166,3 +167,150 @@ def test_search_plan_cities():
     assert cities == {"Тюмень", "Курган", ""}
     deep = {q.city for q in plan if q.pass_no == 4}
     assert deep == {"Тюмень", ""}
+
+
+# --- регрессии по итогам ревью ---
+
+def test_home_variant_comps_do_not_displace_exact_model(tyumen):
+    home_256 = [make_listing("iPhone 12 256GB", p, "Всё работает", city="Тюмень") for p in (21800, 22000, 22300, 22500)]
+    far_64 = [make_listing("iPhone 12 64GB", p, "Всё работает", city=c)
+              for p, c in zip((11700, 11900, 12000, 12100, 12200, 12300, 12400, 12000, 11800, 12100),
+                              ["Москва", "Екатеринбург", "Курган", "Омск"] * 3)]
+    a = _analyze(tyumen, make_listing("iPhone 12 64GB", 13000, "Всё работает", city="Тюмень"), home_256 + far_64)
+    assert a.market.match_level == "model" and a.market.working_median < 13000
+    assert "других городов" in a.market.basis and a.recommendation.startswith("ПРОПУСТИТЬ")
+
+
+def test_variantless_title_uses_family_comps(tyumen):
+    comps = _comps([16000, 17000, 15500, 16500, 18000])
+    a = _analyze(tyumen, make_listing("iPhone 12 не включается", 3000, "Не включается", city="Тюмень"), comps)
+    assert a.market.comps_count == 5 and a.market.match_level == "family"
+
+
+def test_pickup_choice_counts_loading_for_large_items(tyumen):
+    lg = logistics_for("Тобольск", "large", tyumen)  # 2×250×7=3500 + погрузка 1500 > 2500 + 1500
+    assert lg.mode == "delivery"
+    near = logistics_for("Ялуторовск", "large", tyumen)
+    assert near.mode == "pickup" and near.extra_cost == 1050 + tyumen.transport_cost["large"]
+
+
+def test_city_matching_by_transliteration(tyumen):
+    tyumen.pickup_distances_km = {**tyumen.pickup_distances_km, "Тавда": 230}
+    assert logistics_for("tavda", "large", tyumen).mode == logistics_for("Тавда", "large", tyumen).mode
+    assert logistics_for("tyumen", "small", tyumen).mode == "local"
+    assert logistics_for("г. тюмень", "small", tyumen).mode == "local"
+
+
+def test_empty_yaml_sections_fall_back_to_defaults(tmp_path):
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("region: Тюмень\npickup_distances_km:\ndelivery_cost:\n", encoding="utf-8")
+    s = load_settings(cfg)
+    assert s.pickup_distances_km == {} and s.delivery_cost["small"] == 450
+    assert logistics_for("Курган", "small", s).mode == "delivery"
+
+
+def _page(tmp_path, name, body):
+    path = tmp_path / name
+    path.write_text(f"<html><head><title>t</title></head><body>{body}</body></html>", encoding="utf-8")
+    return parse_saved_page(path)
+
+
+def test_price_never_glues_title_digits(tmp_path):
+    (r,) = _page(tmp_path, "a.html", '<div><a href="/tyumen/telefony/x_4700000001">iPhone 12</a>'
+                                      '<span>8 900 ₽</span><p>Описание товара достаточно длинное</p></div>')
+    assert r["price"] == 8900
+    (r,) = _page(tmp_path, "b.html", '<div data-marker="item"><a href="/tyumen/telefony/x_4700000002">Galaxy S21 8/128'
+                                      '</a><s>12 000 ₽</s><span>9 500 ₽</span><span>от 900 ₽ в месяц</span></div>')
+    assert r["price"] == 9500
+    (r,) = _page(tmp_path, "c.html", '<div data-marker="item"><a href="/tyumen/telefony/x_4700000003">PS4</a>'
+                                      '<span>Цена не указана</span><span>Доставка 300 ₽</span></div>')
+    assert r["price"] is None
+
+
+def test_single_result_card_does_not_swallow_page(tmp_path):
+    body = ('<nav data-marker="breadcrumbs"><span itemprop="name">Тюмень</span></nav>'
+            '<p>Объявления о продаже мобильных телефонов в Тюмени: большой выбор, низкие цены.</p>'
+            '<section><div><a href="/tyumen/telefony/iphone_12_mini_4700000010">iPhone 12 mini</a>'
+            '<span>14 000 ₽</span><p>Экран разбит, Face ID не работает.</p></div></section>')
+    (r,) = _page(tmp_path, "s.html", body)
+    assert r["title"] == "iPhone 12 mini" and "Экран разбит" in r["description"]
+
+
+def test_item_seen_first_in_compact_block_uses_full_card(tmp_path):
+    body = ('<div data-marker="viewed-items"><a href="/tyumen/telefony/x_4801000001">iPhone 12</a>'
+            '<a href="/tyumen/telefony/y_4801000009">Другой</a></div>'
+            '<div data-marker="item"><a href="/tyumen/telefony/x_4801000001">iPhone 12</a>'
+            '<meta itemprop="price" content="9500"><div itemprop="description">Разбит экран, остальное работает</div></div>')
+    rec = {r["listing_id"]: r for r in _page(tmp_path, "d.html", body)}["4801000001"]
+    assert rec["price"] == 9500 and "Разбит" in rec["description"]
+
+
+def test_item_page_prefers_own_description_and_price(tmp_path):
+    body = ('<h1>Ноутбук HP</h1><span data-marker="item-view/item-price" itemprop="price" content="23500">23 500</span>'
+            '<span itemprop="priceCurrency">₽</span>'
+            '<div data-marker="item-view/item-description"><p>Сильно греется и выключается</p></div>'
+            '<div data-marker="item"><a href="/tyumen/noutbuki/z_4598765432">Другой</a>'
+            '<div itemprop="description">Идеальное состояние</div><meta itemprop="price" content="999"></div>'
+            '<div data-marker="seller-info/name"><a href="/user/0d5cabc/profile?src=item">Пётр</a></div>')
+    path = tmp_path / "item.html"
+    path.write_text('<html><head><link rel="canonical" href="https://www.avito.ru/tyumen/noutbuki/hp_4512340000">'
+                    f'</head><body>{body}</body></html>', encoding="utf-8")
+    (r,) = parse_saved_page(path)
+    assert r["price"] == 23500 and "греется" in r["description"] and r["seller_id"] == "0d5cabc"
+
+
+def test_relative_dates():
+    from datetime import date
+    from arbitrage.html_import import parse_relative_date
+    ref = date(2026, 10, 14)
+    assert parse_relative_date("2 часа назад", ref) == "2026-10-14"
+    assert parse_relative_date("вчера в 18:20", ref) == "2026-10-13"
+    assert parse_relative_date("3 дня назад", ref) == "2026-10-11"
+    assert parse_relative_date("12 октября", ref) == "2026-10-12"
+    assert parse_relative_date("20 декабря", ref) == "2025-12-20"
+    assert parse_relative_date("неизвестно", ref) == ""
+
+
+def test_broken_and_hidden_files_do_not_stop_import(tmp_path):
+    folder = tmp_path / "p"
+    folder.mkdir()
+    (folder / "search.HTML").write_bytes((FIXTURES / "search_page.html").read_bytes())
+    (folder / "._search.mhtml").write_bytes(b"\x00\x05\x16\x07junk")
+    (folder / "broken.mht").write_bytes(b"not a mime file")
+    listings, errors = load_listings(sources_for([folder]))
+    assert {l.listing_id for l in listings} == {"4501234567", "4507654321"}
+    assert any("broken.mht" in e for e in errors)
+    with pytest.raises(FileNotFoundError):
+        sources_for([tmp_path / "нет такой папки"])
+
+
+def test_reimport_of_search_snippet_keeps_full_listing(storage, tyumen, tmp_path):
+    from arbitrage.pipeline import run_campaign
+    run_campaign(storage, tyumen, [FIXTURES / "listing_page.html"])
+    path = tmp_path / "search.html"
+    path.write_text('<html><head><title>поиск</title></head><body><div data-marker="item">'
+                    '<a href="/yalutorovsk/noutbuki/lenovo_ideapad_3_15_4512345678">Ноутбук Lenovo IdeaPad 3 15</a>'
+                    '<meta itemprop="price" content="8500"><div itemprop="description">Состояние хорошее</div>'
+                    '</div></body></html>', encoding="utf-8")
+    run_campaign(storage, tyumen, [path])
+    listing = storage.get_listing("4512345678")
+    assert listing.price == 8500 and "перегрева" in listing.description
+    assert listing.seller_id == "i123456789" and listing.condition == "Б/у"
+    a = storage.latest_analysis("4512345678")
+    assert "overheat" in {i.symptom for i in a.defects.items}
+
+
+def test_seller_ids_from_profile_links_are_distinct(tmp_path):
+    from arbitrage.dedup import deduplicate
+    from arbitrage.models import Listing
+    recs = []
+    for n, seller in enumerate(["zzz999", "abc123"]):
+        path = tmp_path / f"{n}.html"
+        path.write_text('<html><head><link rel="canonical" href="https://www.avito.ru/tyumen/telefony/'
+                        f'iphone_12_450111111{n}"></head><body><h1>iPhone 12, 128 ГБ</h1>'
+                        '<span data-marker="item-view/item-price">12 000 ₽</span>'
+                        f'<div data-marker="seller-info/name"><a href="/user/{seller}/profile">x</a></div>'
+                        '</body></html>', encoding="utf-8")
+        recs += [Listing.from_dict(r) for r in parse_saved_page(path)]
+    assert {r.seller_id for r in recs} == {"zzz999", "abc123"}
+    assert len(deduplicate(recs).unique) == 2

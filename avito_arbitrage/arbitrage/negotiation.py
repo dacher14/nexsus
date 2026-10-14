@@ -32,7 +32,9 @@ AUTHORIZATION_PHRASES = (
     "начать переговоры по одобренным объявлениям",
 )
 
-_STOP_CONTACT = ("не пишите", "не беспокойте", "отстаньте", "не интересно", "больше не пишите", "спам")
+_STOP_CONTACT_RE = re.compile(
+    r"не\s+(?:надо\s+|нужно\s+)?(?:мне\s+)?(?:больше\s+)?пи[шс]|хватит\s+(?:мне\s+)?пи[шс]|"
+    r"не\s+беспоко|отстан|отвал|не\s+интересн|спам|черн\w*\s+спис")
 _SOLD = ("продано", "уже продан", "продал", "продала", "уже забрали", "забронирован", "бронь")
 _AGREE = ("договорились", "согласен", "согласна", "по рукам", "забирайте", "приезжайте", "можно забирать", "хорошо, давайте", "ок, давайте")
 _REFUSE = ("нет", "не уступлю", "без торга", "торг неуместен", "торга нет", "дешевле не отдам", "цена окончательная", "не отдам")
@@ -52,8 +54,8 @@ _UNIT_AFTER = re.compile(r"\s?(?:gb|гб|tb|тб|mah|мач|гц|hz|вт|w\b|м�
 _MODEL_BEFORE = re.compile(r"(?:iphone|айфон|galaxy|note|rtx|gtx|rx|ps|xbox|series|ryzen|core|i[3579]|модель)\s*$")
 
 
-def parse_price_mentions(text: str) -> list[int]:
-    """Цены в тексте: «9 500», «10000», «9.5к». Числа с единицами (128GB) и номера моделей — не цены."""
+def _price_mentions(text: str) -> list[tuple[int, int]]:
+    """(цена, позиция) для «9 500», «10000», «9.5к». Числа с единицами (128GB) и номера моделей — не цены."""
     out = []
     norm = normalize_text(text).replace("\u00a0", " ")
     for m in _PRICE_RE.finditer(norm):
@@ -61,11 +63,39 @@ def parse_price_mentions(text: str) -> list[int]:
             continue
         token = m.group(1)
         if re.search(r"к|тыс", token):
-            num = float(re.sub(r"[^\d.,]", "", token).replace(",", "."))
-            out.append(int(num * 1000))
+            value = int(float(re.sub(r"[^\d.,]", "", token).replace(",", ".")) * 1000)
         else:
-            out.append(int(re.sub(r"[ .]", "", token)))
-    return [p for p in out if 100 <= p <= 5_000_000]
+            value = int(re.sub(r"[ .]", "", token))
+        if 100 <= value <= 5_000_000:
+            out.append((value, m.start()))
+    return out
+
+
+def parse_price_mentions(text: str) -> list[int]:
+    return [value for value, _ in _price_mentions(text)]
+
+
+_NOT_ASKING_BEFORE = re.compile(r"(скин|уступ|сброш|сбав|доставк|пересыл|отправк|сдэк|почт|комисси|разниц|залог)"
+                                r"[а-я]*\s*(?:на|в|за|около|примерно|где-то|до|ещ[её])?\s*$")
+_ASKING_BEFORE = re.compile(r"(?:за|отдам|отдаю|цена|минимум|не меньше|не дешевле|давайте|могу)\s*$")
+
+
+def seller_price_from(reply: str, reference: int | None = None) -> int | None:
+    """Цена, которую называет продавец. Скидки («скину 500»), доставка и суммы намного
+    ниже текущего предложения ценой продавца не считаются."""
+    norm = normalize_text(reply).replace("\u00a0", " ")
+    candidates = []
+    for value, pos in _price_mentions(reply):
+        before = norm[max(0, pos - 25):pos]
+        if _NOT_ASKING_BEFORE.search(before):
+            continue
+        if reference and value < reference * 0.5:
+            continue
+        candidates.append((bool(_ASKING_BEFORE.search(before)), pos, value))
+    if not candidates:
+        return None
+    preferred = [c for c in candidates if c[0]]
+    return (preferred or candidates)[-1][2]
 
 
 @dataclass
@@ -89,7 +119,10 @@ def strategy_for(a: Analysis) -> str:
         parts.append("C — аргументированный торг за неисправный товар")
     elif a.market.comps_count >= 3:
         parts.append("A — рациональный торг по ценам аналогов")
-    parts.append("B — удобство для продавца (быстрый самовывоз)")
+    if a.logistics.mode == "delivery":
+        parts.append("B — удобство для продавца (быстрое оформление Авито Доставки)")
+    else:
+        parts.append("B — удобство для продавца (быстрый самовывоз)")
     if "no_bargain" in a.defects.signals:
         parts.append("E — продавец против торга: вероятно отложить сделку")
     return "; ".join(parts)
@@ -179,10 +212,15 @@ class Negotiator:
             return a, None, f"Переговоры не начаты: {reason}"
         if state["status"] == NS.DRAFT_READY.value:
             pending = [m for m in self.storage.messages(listing_id) if m["direction"] == "out" and not m["sent"]]
-            if pending:
+            if pending and pending[-1]["price"] == a.start_price and state["max_price"] == a.max_deal_price:
                 return a, pending[-1]["text"], "Черновик уже подготовлен и ещё не отправлен"
+            self.storage.discard_unsent_drafts(listing_id)  # цена или экономика изменились — новый черновик
         elif state["status"] != NS.NOT_STARTED.value:
-            return a, None, f"Переговоры уже идут (статус {state['status']})"
+            # переговоры идут: предел только снижается до свежего расчёта
+            self.storage.save_negotiation(
+                listing_id, max_price=min(state["max_price"] or a.max_deal_price, a.max_deal_price),
+                target_price=min(state["target_price"] or a.target_price, a.target_price))
+            return a, None, f"Переговоры уже идут (статус {state['status']}); предел цены пересчитан"
         text = first_message(a, self.settings, listing.title)
         self.storage.add_message(listing_id, "out", text, price=a.start_price, sent=False)
         self.storage.save_negotiation(
@@ -205,16 +243,18 @@ class Negotiator:
         state = self._require(listing_id)
         self.storage.add_message(listing_id, "in", reply)
         text = normalize_text(reply)
-        prices = parse_price_mentions(reply)
-        seller_price = prices[-1] if prices else None
+        seller_price = seller_price_from(reply, state.get("last_offer") or state.get("start_price"))
         new_facts = self._new_facts(listing_id, reply)
-        max_price = state["max_price"]
+        listing = self.storage.get_listing(listing_id)
+        max_price = min(state["max_price"] or 0, listing.price if listing else state["max_price"] or 0)
         if new_facts:
             # новый дефект — пересчитать предел до продолжения переговоров
             a = self._reanalyze_with_reply(listing_id, reply)
-            max_price = min(max_price or 0, a.max_deal_price or 0)
-            self.storage.save_negotiation(listing_id, max_price=max_price,
-                                          target_price=min(state["target_price"] or 0, a.target_price or 0))
+            max_price = min(max_price, a.max_deal_price or 0)
+        if max_price != state["max_price"]:
+            self.storage.save_negotiation(
+                listing_id, max_price=max_price, target_price=min(state["target_price"] or 0, max_price),
+                last_offer=min(state["last_offer"] or 0, max_price))
             state = self.storage.negotiation(listing_id)
 
         latest = self.storage.latest_analysis(listing_id)
@@ -260,7 +300,7 @@ class Negotiator:
         rounds = state.get("rounds") or 0
         sig = _signature(self.settings)
 
-        if any(w in text for w in _STOP_CONTACT):
+        if _STOP_CONTACT_RE.search(text):
             return ReplyOutcome("stop", seller_price, NS.CLOSED,
                                 "Продавец попросил не писать — контакт прекращён", notify_user=True)
         if any(w in text for w in _SOLD):
@@ -276,12 +316,18 @@ class Negotiator:
                                 "После новых сведений сделка не проходит по экономике — отложить",
                                 notify_user=True, new_facts=new_facts)
 
+        check = ("оформление через Авито Доставку с проверкой при получении" if remote
+                 else "проверка товара на месте")
         agree = any(w in text for w in _AGREE)
         if agree and (seller_price is None or seller_price <= max_price):
             price = seller_price or last_offer
+            if not price or price > max_price:
+                return ReplyOutcome("info", price, NS.DEFERRED,
+                                    f"Продавец согласен на {fmt_rub(price)}, но после новых сведений предел "
+                                    f"ниже — нужно решение пользователя", notify_user=True, new_facts=new_facts)
             return ReplyOutcome("agree", price, NS.AGREED,
-                                f"Цена {fmt_rub(price)} согласована. Это НЕ покупка: нужна проверка товара "
-                                f"на месте и отдельное подтверждение покупки пользователем.",
+                                f"Цена {fmt_rub(price)} согласована. Это НЕ покупка: нужна {check} "
+                                f"и отдельное подтверждение покупки пользователем.",
                                 notify_user=True, new_facts=new_facts)
         if seller_price is not None:
             if seller_price <= target:
@@ -292,7 +338,7 @@ class Negotiator:
                     draft = (f"Спасибо! {fmt_rub(seller_price)} мне подходит. Когда удобно встретиться, "
                              f"чтобы я посмотрел и проверил? Оплата на месте после проверки.{sig}")
                 return ReplyOutcome("counter", seller_price, NS.AGREED,
-                                    "Встречная цена в пределах целевой — согласовать осмотр; "
+                                    f"Встречная цена в пределах целевой — дальше {check}; "
                                     "покупка только после проверки и подтверждения пользователя",
                                     draft=draft, notify_user=True, new_facts=new_facts)
             if seller_price <= max_price:
@@ -308,14 +354,15 @@ class Negotiator:
                 return ReplyOutcome("counter", seller_price, NS.COUNTER_OFFER,
                                     f"Предложить {fmt_rub(offer)} (в пределах лимита)", draft=draft,
                                     new_facts=new_facts)
-            # встречная цена выше предела
-            if rounds < self.settings.negotiation_max_rounds and last_offer < max_price:
-                offer = floor100(max_price)
-                draft = (f"Спасибо за ответ. С учётом {'ремонта и рисков' if state.get('strategy', '').startswith('C') else 'цен на аналогичные предложения'} "
-                         f"больше {fmt_rub(offer)} предложить не могу. Если вас устроит — "
-                         f"{'готов оформить заказ' if remote else 'готов подъехать'}.{sig}")
+            # встречная цена выше предела: шаг к пределу, но сам предел не называем и не подаём как потолок
+            step = floor100(last_offer + (max_price - last_offer) / 2)
+            offer = min(step, max_price - 100)
+            if rounds < self.settings.negotiation_max_rounds and offer > last_offer:
+                handover = "сразу оформить заказ с доставкой" if remote else "быстро встретиться и забрать"
+                draft = (f"Спасибо за ответ. Могу предложить {fmt_rub(offer)} и {handover}. "
+                         f"Подумайте, пожалуйста.{sig}")
                 return ReplyOutcome("counter", seller_price, NS.COUNTER_OFFER,
-                                    f"Последнее предложение {fmt_rub(offer)}; при отказе — отложить и следить за ценой",
+                                    f"Предложить {fmt_rub(offer)}; при отказе — отложить и следить за ценой",
                                     draft=draft, new_facts=new_facts)
             return ReplyOutcome("refuse", seller_price, NS.DEFERRED,
                                 f"Продавец хочет {fmt_rub(seller_price)} — выше предела. Отложено, следим за снижением цены",

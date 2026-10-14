@@ -10,7 +10,7 @@ import hashlib
 from dataclasses import dataclass
 
 from .categories import normalize_text
-from .models import Listing
+from .models import Listing, merge_listing_data
 
 
 @dataclass
@@ -35,9 +35,10 @@ def deduplicate(found: list[Listing]) -> DedupResult:
         if prev is None:
             by_id[listing.listing_id] = listing
         else:
-            # сохраняем самую свежую цену, но запрос, по которому нашли впервые, не теряем
-            listing.search_query = prev.search_query or listing.search_query
-            by_id[listing.listing_id] = listing
+            # свежая цена, но полное описание и найденный впервые запрос не теряются
+            merged = merge_listing_data(prev.to_dict(), listing.to_dict())
+            merged["search_query"] = prev.search_query or listing.search_query
+            by_id[listing.listing_id] = Listing(**merged)
     exact = len(found) - len(by_id)
 
     unique: list[Listing] = []

@@ -92,3 +92,22 @@ def test_bot_logic(storage, settings, tmp_path):
     assert "Черновик" in bot.handle("/prepare") or "Переговоры не начаты" in bot.handle("/prepare")
     assert "Таблица обновлена" in bot.handle("/export")
     assert "Не понял" in bot.handle("купи всё")
+
+
+def test_deal_for_unknown_listing_is_rejected(storage):
+    import pytest
+    with pytest.raises(KeyError):
+        update_deal(storage, "999", "bought", purchase_price=100)
+    assert storage.capital_in_use() == 0
+
+
+def test_report_counts_and_rejected(storage, settings):
+    from arbitrage.negotiation import Negotiator
+    from arbitrage.report import campaign_report, negotiation_report
+    lid = _seed(storage, settings)
+    storage.set_user_status(lid, UserStatus.APPROVED)
+    Negotiator(storage, settings).authorize("Давай, начинай переговоры по одобренным объявлениям")
+    assert "с подготовленными сообщениями: 0" in negotiation_report(storage)
+    analyses = list(storage.latest_analyses().values())
+    assert lid in campaign_report(analyses, {}, None, settings, False)
+    assert lid not in campaign_report(analyses, {}, None, settings, False, statuses={lid: "REJECTED"})

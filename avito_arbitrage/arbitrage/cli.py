@@ -24,15 +24,19 @@ def _storage(args, settings) -> Storage:
 
 def cmd_campaign(args, settings) -> int:
     storage = _storage(args, settings)
-    result = run_campaign(storage, settings, args.input, comps_path=args.comps, out_path=args.out,
-                          use_llm=args.llm, full_recheck=args.full_recheck)
+    try:
+        result = run_campaign(storage, settings, args.input, comps_path=args.comps, out_path=args.out,
+                              use_llm=args.llm, full_recheck=args.full_recheck)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Ошибка входных данных: {exc}", file=sys.stderr)
+        return 2
     for err in result.errors[:20]:
         print(f"  пропущено: {err}", file=sys.stderr)
     data = workbook_input(storage, settings)
     if args.google_sheet:
         _push_sheets(data, args)
     print(campaign_report(data.analyses, result.stats(), str(result.workbook) if result.workbook else None,
-                          settings, data.has_synthetic))
+                          settings, data.has_synthetic, statuses=data.statuses))
     return 0
 
 
@@ -71,7 +75,7 @@ def cmd_import_statuses(args, settings) -> int:
     current = storage.user_statuses()
     changed = 0
     for row in rows:
-        lid, status = row[id_col], (row[st_col] or "").strip() if row[st_col] else ""
+        lid, status = row[id_col], str(row[st_col]).strip() if row[st_col] is not None else ""
         if not lid or not status:
             continue
         if status not in USER_STATUSES:
@@ -122,6 +126,9 @@ def cmd_negotiate(args, settings) -> int:
 
 def cmd_deal(args, settings) -> int:
     storage = _storage(args, settings)
+    if storage.get_listing(args.id) is None:
+        print(f"Объявление {args.id} не найдено в базе", file=sys.stderr)
+        return 2
     data = update_deal(storage, args.id, args.status, purchase_price=args.purchase, costs_so_far=args.costs,
                        repair_cost=args.repair_cost, repair_hours=args.repair_hours, actual_fault=args.fault,
                        bought_at=args.bought_at, listed_at=args.listed_at, sold_price=args.sold,
@@ -135,7 +142,8 @@ def cmd_deal(args, settings) -> int:
 def cmd_report(args, settings) -> int:
     storage = _storage(args, settings)
     data = workbook_input(storage, settings)
-    print(campaign_report(data.analyses, data.campaign, None, settings, data.has_synthetic))
+    print(campaign_report(data.analyses, data.campaign, None, settings, data.has_synthetic,
+                          statuses=data.statuses))
     print()
     print(negotiation_report(storage))
     return 0

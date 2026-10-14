@@ -171,7 +171,8 @@ class Analyzer:
         defective = a.defects.has_defects or a.defects.is_untested
         if suspicious:
             a.recommendation = "ПРОВЕРИТЬ: цена подозрительно низкая — высокий риск мошенничества"
-            a.action = "Проверить продавца; только личная встреча"
+            a.action = ("Проверить продавца; только Авито Доставка с проверкой при получении"
+                        if a.logistics.mode == "delivery" else "Проверить продавца; только личная встреча")
         elif a.asking_price <= max_buy:
             if a.days_to_sell > s.max_days_to_sell:
                 a.recommendation, a.action = "НАБЛЮДАТЬ: прибыльно, но долгий срок продажи", "Наблюдать"

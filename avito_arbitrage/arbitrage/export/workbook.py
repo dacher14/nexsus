@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 
 from ..analyzer import fmt_rub
 from ..config import Settings
+from ..geo import city_key
 from ..models import Analysis, Listing, NegotiationStatus, UserStatus
 
 USER_STATUSES = [s.value for s in UserStatus]
@@ -436,17 +437,23 @@ def market_tables(data: WorkbookInput) -> list[Table]:
         Column("Критических", 10, "int"), Column("Лучший рейтинг", 10, "int")], query_rows)
 
     by_city: dict[str, list[Analysis]] = defaultdict(list)
+    display: dict[str, str] = {}
     for a in analyses:
-        by_city[data.listings[a.listing_id].city or "не указан"].append(a)
+        raw_city = data.listings[a.listing_id].city
+        key = city_key(raw_city) or "-"
+        by_city[key].append(a)
+        display.setdefault(key, a.logistics.city or raw_city or "не указан")
     mode_names = {"local": "домашний город", "pickup": "самовывоз", "delivery": "доставка",
                   "unavailable": "не возим", "unknown": "не указан"}
-    city_rows = [[city, len(items), mode_names.get(items[0].logistics.mode, items[0].logistics.mode),
-                  sum(1 for a in items if a in profitable), sum(1 for a in items if a.action == "Торговаться"),
-                  _median([a.discount for a in items if a.discount is not None]),
-                  round(statistics.mean(a.risk for a in items))]
-                 for city, items in sorted(by_city.items(), key=lambda kv: -len(kv[1]))]
+    city_rows = []
+    for key, items in sorted(by_city.items(), key=lambda kv: -len(kv[1])):
+        modes = Counter(mode_names.get(a.logistics.mode, a.logistics.mode) for a in items)
+        city_rows.append([display[key], len(items), " / ".join(f"{m} {n}" for m, n in modes.most_common()),
+                          sum(1 for a in items if a in profitable), sum(1 for a in items if a.action == "Торговаться"),
+                          _median([a.discount for a in items if a.discount is not None]),
+                          round(statistics.mean(a.risk for a in items))])
     cities = Table("По городам", [
-        Column("Город", 22), Column("Объявлений", 11, "int"), Column("Логистика", 16),
+        Column("Город", 22), Column("Объявлений", 11, "int"), Column("Логистика", 28),
         Column("Выгодных", 10, "int"), Column("После торга", 10, "int"), Column("Медианный дисконт", 12, "pct"),
         Column("Средний риск", 10, "int")], city_rows)
 

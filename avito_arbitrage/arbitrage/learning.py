@@ -48,6 +48,8 @@ def _forecast_snapshot(storage: Storage, listing_id: str) -> dict:
 def update_deal(storage: Storage, listing_id: str, status: str, **fields) -> dict:
     if status not in DEAL_STATUSES:
         raise ValueError(f"Статус сделки должен быть одним из: {', '.join(DEAL_STATUSES)}")
+    if storage.get_listing(listing_id) is None:
+        raise KeyError(f"Объявление {listing_id} не найдено в базе")
     existing = storage.deal(listing_id)
     data = dict(existing["data"]) if existing else {}
     if not data.get("forecast"):

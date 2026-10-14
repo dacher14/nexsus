@@ -67,12 +67,10 @@ class DealContext:
     @property
     def acquisition_transport(self) -> int:
         """Сколько стоит забрать товар: по городу, поездкой в соседний город или доставкой."""
-        size, s, lg = self.category.size, self.settings, self.logistics
-        local = s.transport_cost.get(size, 0)
-        if lg.mode == "pickup":
-            return lg.extra_cost + (local if size in ("large", "bulky") else 0)
-        if lg.mode == "delivery":
-            return lg.extra_cost
+        lg = self.logistics
+        local = self.settings.transport_cost.get(self.category.size, 0)
+        if lg.mode in ("pickup", "delivery"):
+            return lg.extra_cost  # для самовывоза уже включает погрузку крупногабарита
         return local
 
 
